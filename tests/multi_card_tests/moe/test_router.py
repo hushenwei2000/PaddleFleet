@@ -40,6 +40,7 @@ class TestTop2Router(unittest.TestCase):
             gated_linear_unit=True,
             n_shared_experts=0,
             hidden_act=F.silu,
+            moe_grouped_gemm_deep_gemm=False,
         )
 
         seed = 123

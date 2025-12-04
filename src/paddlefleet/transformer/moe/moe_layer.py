@@ -85,7 +85,7 @@ class MoELayer(nn.Layer):
             self.moe_use_fusion_node = True
 
         self.router_aux_loss_coef = config.router_aux_loss_coef
-
+        self.moe_grouped_gemm_deep_gemm = config.moe_grouped_gemm_deep_gemm
         self.moe_group = pg_collection.ep
         self.expert_model_parallel_size = (
             utils.get_pg_size(self.moe_group)
@@ -336,6 +336,7 @@ class MoELayer(nn.Layer):
             self,
             self.num_experts_per_tok,
             use_fp8_mlp=self.fp8,
+            moe_grouped_gemm_deep_gemm=self.moe_grouped_gemm_deep_gemm,
         )
         hidden_states = self.token_dispatcher._comm_manager.combine(
             hidden_states,

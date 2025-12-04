@@ -326,6 +326,9 @@ class TransformerConfig(ModelParallelConfig):
     moe_grouped_gemm: bool = False
     """Whether to use grouped gemm."""
 
+    moe_grouped_gemm_deep_gemm: bool = True
+    """Temporary parameter. Whether to use deep gemm for grouped gemm. If false, use paddle batched gemm."""
+
     ####################
     # fp8
     ####################

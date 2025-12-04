@@ -244,6 +244,7 @@ class MlpNode:
         backward_subbatch_rows=None,
         use_bf16_gemm_weight_grad=False,
         use_fp8_mlp=True,
+        moe_grouped_gemm_deep_gemm=True,
     ):
         """
         Constructor
@@ -310,6 +311,7 @@ class MlpNode:
                 backward_subbatch_rows=backward_subbatch_rows,
                 use_bf16_gemm_weight_grad=use_bf16_gemm_weight_grad,
                 use_fp8_mlp=use_fp8_mlp,
+                moe_grouped_gemm_deep_gemm=moe_grouped_gemm_deep_gemm,
             )
         self.unzip_node = UnZipNode(self.token_dispatcher)
         self.zip_node = ZipNode(self.token_dispatcher)
@@ -605,6 +607,7 @@ class FusionMoePyLayer(paddle.autograd.PyLayer):
         use_bf16_gemm_weight_grad=False,
         is_first_fwd=False,
         fp8_dispatched_handle=None,
+        moe_grouped_gemm_deep_gemm=True,
     ):
         """
         根据给定的参数执行前向传播操作。
@@ -630,6 +633,7 @@ class FusionMoePyLayer(paddle.autograd.PyLayer):
             backward_subbatch_rows=backward_subbatch_rows,
             use_bf16_gemm_weight_grad=use_bf16_gemm_weight_grad,
             use_fp8_mlp=use_fp8_mlp,
+            moe_grouped_gemm_deep_gemm=moe_grouped_gemm_deep_gemm,
         )
 
         if fp8_dispatched_handle is not None:
