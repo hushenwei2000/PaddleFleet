@@ -361,22 +361,15 @@ class ExpertsGroupGemmContiguousNode:
             x = self.input
         if numpy.prod(x.shape) != 0:
             expert_w1 = paddle.stack(expert_w1, axis=0)
-            if self.moe_grouped_gemm_deep_gemm:
-                o1 = paddle.zeros(
-                    [x.shape[0], expert_w1.shape[2]], dtype="bfloat16"
-                )
-                deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
-                    x,
-                    expert_w1.transpose((0, 2, 1)),
-                    o1,
-                    self.tokens_per_expert_indices,
-                )
-            else:
-                o1 = paddle.incubate.nn.functional.batched_gemm(
-                    x,
-                    expert_w1,
-                    self.tokens_per_expert,
-                )
+            o1 = paddle.zeros(
+                [x.shape[0], expert_w1.shape[2]], dtype="bfloat16"
+            )
+            deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
+                x,
+                expert_w1.transpose((0, 2, 1)),
+                o1,
+                self.tokens_per_expert_indices,
+            )
         else:
             o1 = paddle.empty(
                 [x.shape[0], expert_w1[0].shape[1]], dtype=expert_w1[0].dtype
@@ -503,22 +496,15 @@ class ExpertsGroupGemmContiguousNode:
         # down proj
         if numpy.prod(o2.shape) != 0:
             expert_w2 = paddle.stack(expert_w2, axis=0)
-            if self.moe_grouped_gemm_deep_gemm:
-                o3 = paddle.zeros(
-                    [o2.shape[0], expert_w2.shape[2]], dtype="bfloat16"
-                )
-                deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
-                    o2,
-                    expert_w2.transpose((0, 2, 1)),
-                    o3,
-                    self.tokens_per_expert_indices,
-                )
-            else:
-                o3 = paddle.incubate.nn.functional.batched_gemm(
-                    o2,
-                    expert_w2,
-                    self.tokens_per_expert,
-                )
+            o3 = paddle.zeros(
+                [o2.shape[0], expert_w2.shape[2]], dtype="bfloat16"
+            )
+            deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
+                o2,
+                expert_w2.transpose((0, 2, 1)),
+                o3,
+                self.tokens_per_expert_indices,
+            )
         else:
             o3_shape = [o2.shape[0], expert_w2[0].shape[1]]
             o3 = paddle.empty(o3_shape, dtype=o1.dtype)
@@ -594,23 +580,16 @@ class ExpertsGroupGemmContiguousNode:
 
         if numpy.prod(unzipped_grad.shape) != 0:
             expert_w2 = paddle.stack([t.T for t in expert_w2], axis=0)
-            if self.moe_grouped_gemm_deep_gemm:
-                do2_s = paddle.zeros(
-                    [unzipped_grad.shape[0], expert_w2.shape[2]],
-                    dtype=paddle.bfloat16,
-                )
-                deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
-                    unzipped_grad,
-                    expert_w2.transpose((0, 2, 1)),
-                    do2_s,
-                    self.tokens_per_expert_indices,
-                )
-            else:
-                do2_s = paddle.incubate.nn.functional.batched_gemm(
-                    unzipped_grad,
-                    expert_w2,
-                    self.tokens_per_expert,
-                )
+            do2_s = paddle.zeros(
+                [unzipped_grad.shape[0], expert_w2.shape[2]],
+                dtype=paddle.bfloat16,
+            )
+            deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
+                unzipped_grad,
+                expert_w2.transpose((0, 2, 1)),
+                do2_s,
+                self.tokens_per_expert_indices,
+            )
         else:
             do2_s_shape = [unzipped_grad.shape[0], expert_w2[0].shape[1]]
             do2_s = paddle.empty(do2_s_shape, dtype=unzipped_grad.dtype)
@@ -715,22 +694,15 @@ class ExpertsGroupGemmContiguousNode:
         """
         if numpy.prod(do1.shape) != 0:
             expert_w1 = paddle.stack([t.T for t in expert_w1], axis=0)
-            if self.moe_grouped_gemm_deep_gemm:
-                dx = paddle.zeros(
-                    [do1.shape[0], expert_w1.shape[2]], dtype=paddle.bfloat16
-                )
-                deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
-                    do1,
-                    expert_w1.transpose((0, 2, 1)),
-                    dx,
-                    self.tokens_per_expert_indices,
-                )
-            else:
-                dx = paddle.incubate.nn.functional.batched_gemm(
-                    do1,
-                    expert_w1,
-                    self.tokens_per_expert,
-                )
+            dx = paddle.zeros(
+                [do1.shape[0], expert_w1.shape[2]], dtype=paddle.bfloat16
+            )
+            deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
+                do1,
+                expert_w1.transpose((0, 2, 1)),
+                dx,
+                self.tokens_per_expert_indices,
+            )
         else:
             dx_shape = [do1.shape[0], expert_w1[0].shape[0]]
             dx = paddle.empty(shape=dx_shape, dtype=do1.dtype)
@@ -847,7 +819,10 @@ class ExpertsGroupGemmContiguousNode:
                     expert_w2[i].grad,
                     paddle.float32,
                 )
-            if hasattr(expert_w2[i], "_apply_backward_hook"):
+            if (
+                hasattr(expert_w2[i], "_apply_backward_hook")
+                and not expert_w2[i].stop_gradient
+            ):
                 expert_w2[i]._apply_backward_hook()
 
     def bwd_gate_up_weight(self, do1, input_x, expert_w1, clear_input=False):
@@ -917,7 +892,10 @@ class ExpertsGroupGemmContiguousNode:
                     expert_w1[i].grad,
                     paddle.float32,
                 )
-            if hasattr(expert_w1[i], "_apply_backward_hook"):
+            if (
+                hasattr(expert_w1[i], "_apply_backward_hook")
+                and not expert_w1[i].stop_gradient
+            ):
                 expert_w1[i]._apply_backward_hook()
 
     @paddle.no_grad()
@@ -1232,22 +1210,34 @@ class ExpertsGroupGemmContiguousNode:
 
         start_idx = 0
         for i, n in enumerate(self.tokens_per_expert):
-            if weights[i].main_grad is None:
-                weights[i].main_grad = paddle.zeros(
-                    weights[i].shape, dtype=paddle.float32
-                )
+            if hasattr(weights[i], "main_grad"):
+                if weights[i].main_grad is None:
+                    weights[i].main_grad = paddle.zeros(
+                        weights[i].shape, dtype=paddle.float32
+                    )
+                grad_attr = weights[i].main_grad
+            else:
+                if weights[i].grad is None:
+                    weights[i].grad = paddle.zeros(
+                        weights[i].shape, dtype=paddle.float32
+                    )
+                grad_attr = weights[i].grad
+
             if n > 0:
                 n = (n + FP8_ALIGN - 1) // FP8_ALIGN * FP8_ALIGN
                 end_idx = start_idx + n
                 paddle._C_ops.fused_linear_param_grad_add(
                     x._slice(start_idx, end_idx),
                     dy._slice(start_idx, end_idx),
-                    weights[i].main_grad,
+                    grad_attr,
                     None,
                     True,
                     False,
                 )
                 start_idx = end_idx
 
-            if hasattr(weights[i], "_apply_backward_hook"):
+            if (
+                hasattr(weights[i], "_apply_backward_hook")
+                and not weights[i].stop_gradient
+            ):
                 weights[i]._apply_backward_hook()

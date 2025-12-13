@@ -81,7 +81,8 @@ class TestFusionBF16ExpertParallel(unittest.TestCase):
             gated_linear_unit=True,
             n_shared_experts=0,
             hidden_act=F.silu,
-            moe_grouped_gemm_deep_gemm=False,
+            moe_grouped_gemm=True,
+            bias_activation_fusion=True,
         )
 
         transformer_layer_spec = get_gpt_layer_local_spec(
@@ -101,6 +102,7 @@ class TestFusionBF16ExpertParallel(unittest.TestCase):
         )[0]
 
         moe_layer_moe_use_fusion_node.moe_use_fusion_node = False
+        moe_layer_moe_use_fusion_node.moe_grouped_gemm = False
 
         output_moe_use_fusion_node_false = moe_layer_moe_use_fusion_node(
             input_data

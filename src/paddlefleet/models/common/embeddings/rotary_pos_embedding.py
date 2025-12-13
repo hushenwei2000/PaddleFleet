@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from paddlefleet.packed_seq_params import PackedSeqParams
-    from paddlefleet.transformer.transformer_block import TransformerBlock
     from paddlefleet.transformer.transformer_config import TransformerConfig
 
 import math
@@ -28,6 +27,7 @@ import paddle
 from paddle import Tensor, nn
 
 from paddlefleet import parallel_state
+from paddlefleet.context_parallel_utils import ContextParallelScatterOp
 
 logger = logging.getLogger(__name__)
 
@@ -190,11 +190,18 @@ class RotaryEmbedding(nn.Layer):
             ).reshape((freqs.shape[0], -1))
         # emb [1, seq_len, 1, dim]
         emb = emb[None, :, None, :]
+        if (
+            self.cp_group is not None
+            and self.cp_group.world_size > 1
+            and not packed_seq
+        ):
+            # slice rotary_pos_emb along sequence dimension and select the partition of the current
+            # CP rank
+            emb = ContextParallelScatterOp.apply(emb, axis=1)
         return emb
 
     def get_rotary_seq_len(
         self,
-        transformer: TransformerBlock,
         transformer_input: Tensor,
         transformer_config: TransformerConfig,
         packed_seq_params: PackedSeqParams | None = None,
@@ -202,8 +209,6 @@ class RotaryEmbedding(nn.Layer):
         """Function to get the rotary sequence length.
 
         Args:
-            transformer (TransformerBlock): The transformer block (decoder/encoder) used
-                by the model
             transformer_input (Tensor): Input tensor to the transformer
             transformer_config (TransformerConfig): Transformer config used by the model
             packed_seq_params (PackedSeqParams): Packed sequence params
@@ -219,21 +224,18 @@ class RotaryEmbedding(nn.Layer):
                 packed_seq_params.max_seqlen_q, packed_seq_params.max_seqlen_kv
             )
         else:
-            if (
-                transformer_config.sequence_parallel
-                and transformer_config.scatter_embedding_sequence_parallel
-            ):
+            if transformer_config.sequence_parallel:
                 seq_axis = 0
             else:
                 seq_axis = 1
-            if transformer is not None and transformer.input_tensor is not None:
-                rotary_seq_len = transformer.input_tensor.shape[seq_axis]
-            else:
-                rotary_seq_len = transformer_input.shape[seq_axis]
+            rotary_seq_len = transformer_input.shape[seq_axis]
 
             if transformer_config.sequence_parallel:
                 rotary_seq_len *= transformer_config.tensor_model_parallel_size
 
-        rotary_seq_len *= transformer_config.context_parallel_size
+        # TODO: self.cp_group.world_size --> transformer_config.context_parallel_size
+        # rotary_seq_len *= transformer_config.context_parallel_size
+        if self.cp_group is not None and self.cp_group.world_size > 1:
+            rotary_seq_len *= self.cp_group.world_size
 
         return rotary_seq_len

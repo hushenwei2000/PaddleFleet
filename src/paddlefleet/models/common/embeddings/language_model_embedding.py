@@ -33,7 +33,7 @@ class LanguageModelEmbedding(FleetLayer):
     """Language model embeddings.
 
     Args:
-        config (TransformerConfig): config object with all necessary configs for TransformerBlock
+        config (TransformerConfig): config object with all necessary configs
         vocab_size (int): vocabulary size
         max_sequence_length (int): maximum size of sequence. This
                              is used for positional embedding
@@ -66,6 +66,11 @@ class LanguageModelEmbedding(FleetLayer):
         )
         self.num_tokentypes = num_tokentypes
         self.scatter_to_sequence_parallel = scatter_to_sequence_parallel
+        if config.sequence_parallel:
+            assert self.scatter_to_sequence_parallel is True, (
+                "If sequence parallel is turned on, scatter_to_sequence_parallel "
+                "must be set to True."
+            )
         self.tp_group = get_tensor_model_parallel_group_if_none(tp_group)
         self.reduce_scatter_embeddings = (
             (not self.add_position_embedding)
@@ -83,10 +88,6 @@ class LanguageModelEmbedding(FleetLayer):
             config=self.config,
             tp_group=self.tp_group,
         )
-        # self.word_embeddings = Embedding(
-        #     num_embeddings=self.vocab_size,
-        #     embedding_dim=self.config.hidden_size,
-        # )
 
         # Position embedding (serial).
         if self.add_position_embedding:
@@ -117,6 +118,10 @@ class LanguageModelEmbedding(FleetLayer):
             self.config.hidden_dropout_prob
         )
 
+    @property
+    def embedding_weight(self):
+        return self.embed_tokens.weight
+
     def zero_parameters(self):
         """Zero out all parameters in embedding."""
         self.embed_tokens.weight.data.fill_(0)
@@ -144,17 +149,17 @@ class LanguageModelEmbedding(FleetLayer):
         Returns:
             Tensor: The output embeddings
         """
-        word_embeddings = self.embed_tokens(input_ids)
+        embed_tokens = self.embed_tokens(input_ids)
         if self.add_position_embedding:
             position_embeddings = self.position_embeddings(position_ids)
-            embeddings = word_embeddings + position_embeddings
+            embeddings = embed_tokens + position_embeddings
         else:
-            embeddings = word_embeddings
+            embeddings = embed_tokens
 
         if (
             not self.reduce_scatter_embeddings
             and self.config.sequence_parallel
-            and self.config.scatter_to_sequence_parallel_region
+            and self.scatter_to_sequence_parallel
         ):
             # Data format change to avoid explicit transposes : [b s h] --> [s b h].
             embeddings = embeddings.transpose([1, 0, 2]).contiguous()
@@ -166,7 +171,7 @@ class LanguageModelEmbedding(FleetLayer):
             tokentype_embedding = self.tokentype_embeddings(tokentype_ids)
             if (
                 self.config.sequence_parallel
-                and self.config.scatter_to_sequence_parallel_region
+                and self.scatter_to_sequence_parallel
             ):
                 tokentype_embedding = tokentype_embedding.permute(
                     1, 0, 2

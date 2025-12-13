@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import paddle
 
-from paddlefleet.transformer.transformer_config import TransformerConfig
+if TYPE_CHECKING:
+    from paddlefleet.transformer.transformer_config import TransformerConfig
 
 
 class FleetLayer(paddle.nn.Layer):
@@ -28,19 +31,3 @@ class FleetLayer(paddle.nn.Layer):
     def __init__(self, config: TransformerConfig):
         super().__init__()
         self.config = config
-
-
-class GraphableFleetLayer(FleetLayer):
-    """Fleet layer that can be used to capture and replay CUDA graphs.
-    Now only TransformerLayer and MambaLayer are graphable.
-
-    Args:
-        config (TransformerConfig): Transformer config
-    """
-
-    def __init__(self, config: TransformerConfig, vp_stage: int | None = None):
-        super().__init__(config)
-
-        assert isinstance(config, TransformerConfig), (
-            "config must be a TransformerConfig"
-        )

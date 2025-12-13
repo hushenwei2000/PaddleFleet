@@ -172,6 +172,12 @@ class TransformerConfig(ModelParallelConfig):
     fp32_residual_connection: bool = False
     """If true, move residual connections to fp32."""
 
+    rope_scaling: dict = None
+    """Related parameters for rope_scaling, default is None."""
+
+    rope_theta: float = 10000.0
+    """The base period of the RoPE embeddings, default is 10000.0."""
+
     ####################
     # mixed-precision
     ####################
@@ -326,8 +332,23 @@ class TransformerConfig(ModelParallelConfig):
     moe_grouped_gemm: bool = False
     """Whether to use grouped gemm."""
 
-    moe_grouped_gemm_deep_gemm: bool = True
-    """Temporary parameter. Whether to use deep gemm for grouped gemm. If false, use paddle batched gemm."""
+    router_z_loss_coef: float = None
+    """Scaling coefficient for z-loss. Default is None."""
+
+    moe_router_force_load_balancing: bool = False
+    """Force load balancing with random logits for MoE router."""
+
+    moe_router_fusion: bool = False
+    """Whether to fuse MoE router."""
+
+    ##################
+    # Context Parallel
+    ##################
+    cp_comm_type: str | list[str] | None = None
+    """Inter-gpu communication type for context parallelism. Not support now.
+    str: all layers share same communication type.
+    List[str]: each layer has its separate communication type.
+    """
 
     ####################
     # fp8

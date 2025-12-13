@@ -34,12 +34,11 @@ if TYPE_CHECKING:
 from paddlefleet import utils
 
 from .fusion_layer_utils import FusionMoePyLayer
-from .moe_communication import AllToAllMoECommunication, DeepEPMoECommunication
 from .moe_expert import GroupedMLPExpert, StandardMLPExpert
-from .moe_router import StandardMoERouter
+from .moe_router import DeepEPTopKRouter, StandardMoERouter
 from .moe_shared_expert import StandardMLPSharedExpert
 from .moe_utils import AddAuxiliaryLoss
-from .token_dispatcher import MoEFlexTokenDispatcher
+from .token_dispatcher import AllToAllTokenDispatcher, MoEFlexTokenDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +60,7 @@ class MoELayer(nn.Layer):
         pg_collection: ProcessGroupCollection | None = None,
     ):
         super().__init__()
+        self.config = config
         self.sublayers = sublayers
         routed_expert_config = deepcopy(config)
         shared_expert_config = deepcopy(config)
@@ -85,7 +85,7 @@ class MoELayer(nn.Layer):
             self.moe_use_fusion_node = True
 
         self.router_aux_loss_coef = config.router_aux_loss_coef
-        self.moe_grouped_gemm_deep_gemm = config.moe_grouped_gemm_deep_gemm
+        self.moe_grouped_gemm = config.moe_grouped_gemm
         self.moe_group = pg_collection.ep
         self.expert_model_parallel_size = (
             utils.get_pg_size(self.moe_group)
@@ -98,9 +98,14 @@ class MoELayer(nn.Layer):
 
         # MoE-Related Configs
         self._init_expert_parallel()
-        self.gate = StandardMoERouter(
-            config=config, pg_collection=pg_collection
-        )
+        if config.moe_router_fusion:
+            self.gate = DeepEPTopKRouter(
+                config=config, pg_collection=pg_collection
+            )
+        else:
+            self.gate = StandardMoERouter(
+                config=config, pg_collection=pg_collection
+            )
 
         self.expert_class = StandardMLPExpert
         self.shared_expert_class = StandardMLPSharedExpert
@@ -166,6 +171,12 @@ class MoELayer(nn.Layer):
             assert self.moe_use_fusion_node, (
                 "fp8 can only be used when moe_use_fusion_node = True."
             )
+        if self.moe_use_fusion_node and not self.moe_grouped_gemm:
+            logger.warning(
+                "moe_use_fusion_node must work with moe_grouped_gemm, but currently moe_grouped_gemm is False. "
+                "Will turn on moe_grouped_gemm."
+            )
+            self.moe_grouped_gemm = True
 
         if self.expert_model_parallel_size > 1:
             if self.moe_token_dispatcher_type == "deepep":
@@ -175,14 +186,8 @@ class MoELayer(nn.Layer):
                     self.num_experts,
                     self.moe_group,
                 )
-                self.communication = DeepEPMoECommunication(
-                    self.moe_group,
-                    self.expert_model_parallel_size,
-                    self.num_experts_per_device,
-                    self.token_dispatcher,
-                )
             elif self.moe_token_dispatcher_type == "alltoall":
-                self.communication = AllToAllMoECommunication(
+                self.token_dispatcher = AllToAllTokenDispatcher(
                     self.moe_group,
                     self.expert_model_parallel_size,
                     self.num_experts_per_device,
@@ -382,16 +387,11 @@ class MoELayer(nn.Layer):
                 reshaped_input = hidden_states.reshape([-1, d_model])
             else:
                 reshaped_input = hidden_states
-            if self.moe_use_fusion_node:
-                output = self._forward_traditional_grouped_gemm_moe(
-                    reshaped_input, mask, gates_masked
-                )
-            else:
-                output = self._forward_traditional_moe(
-                    reshaped_input, topk_indices, topk_weights
-                )
+            output = self._forward_single_card_moe(
+                reshaped_input, topk_indices, topk_weights
+            )
 
-        if self.training and self.router_aux_loss_coef > 0.0:
+        if self.training and self.router_aux_loss_coef:
             aux_loss = aux_loss * self.router_aux_loss_coef
             output = AddAuxiliaryLoss.apply(output, aux_loss)
 
@@ -404,7 +404,7 @@ class MoELayer(nn.Layer):
             output = ScatterOp.apply(output)
         return output, None  # None is bias
 
-    def _forward_traditional_moe(
+    def _forward_single_card_moe(
         self,
         hidden_states: paddle.Tensor,
         selected_experts: paddle.Tensor,

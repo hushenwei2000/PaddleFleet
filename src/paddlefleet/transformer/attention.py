@@ -163,6 +163,7 @@ class Attention(FleetLayer, ABC):
         key,
         value,
         attention_mask,
+        attn_mask_startend_row_indices=None,
         rotary_pos_emb=None,
         attn_mask_type=None,
         attention_bias=None,
@@ -182,6 +183,7 @@ class Attention(FleetLayer, ABC):
                 key,
                 value,
                 attention_mask,
+                attn_mask_startend_row_indices,
                 attn_mask_type=attn_mask_type,
                 attention_bias=attention_bias,
                 packed_seq_params=packed_seq_params,
@@ -200,6 +202,7 @@ class Attention(FleetLayer, ABC):
             key,
             value,
             attention_mask,
+            attn_mask_startend_row_indices,
             rotary_pos_emb,
             attn_mask_type,
         )
@@ -219,11 +222,9 @@ class Attention(FleetLayer, ABC):
         self,
         hidden_states: Tensor,
         attention_mask: Tensor,
+        attn_mask_startend_row_indices: Tensor | None = None,
         key_value_states: Tensor | None = None,
         rotary_pos_emb: Tensor | tuple[Tensor, Tensor] | None = None,
-        rotary_pos_cos: Tensor | None = None,
-        rotary_pos_sin: Tensor | None = None,
-        rotary_pos_cos_sin: Tensor | None = None,
         attention_bias: Tensor | None = None,
         packed_seq_params: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
@@ -340,12 +341,21 @@ class Attention(FleetLayer, ABC):
         # core attention computation
         # ==================================
 
+        # NOTE: For sequence parallel, the input is [seq, b, h],
+        # transpose back to [b, seq, h] for attention computation
+        # TODO: supports [seq, b, h] input in attention computation
+        if self.config.sequence_parallel:
+            query = query.transpose([1, 0, 2, 3]).contiguous()
+            key = key.transpose([1, 0, 2, 3]).contiguous()
+            value = value.transpose([1, 0, 2, 3]).contiguous()
+
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query,
                 key,
                 value,
                 attention_mask,
+                attn_mask_startend_row_indices,
                 attn_mask_type=attn_mask_type,
                 attention_bias=attention_bias,
                 packed_seq_params=packed_seq_params,
@@ -357,6 +367,7 @@ class Attention(FleetLayer, ABC):
                 key,
                 value,
                 attention_mask,
+                attn_mask_startend_row_indices,
                 attn_mask_type=attn_mask_type,
                 attention_bias=attention_bias,
                 packed_seq_params=packed_seq_params,
@@ -376,6 +387,8 @@ class Attention(FleetLayer, ABC):
         # Output. [sq, b, h]
         # =================
 
+        if self.config.sequence_parallel:
+            core_attn_out = core_attn_out.transpose([1, 0, 2]).contiguous()
         output, bias = self.o_proj(core_attn_out)
 
         return output, bias
