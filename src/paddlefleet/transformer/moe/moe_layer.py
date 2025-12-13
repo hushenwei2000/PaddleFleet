@@ -341,7 +341,6 @@ class MoELayer(nn.Layer):
             self,
             self.num_experts_per_tok,
             use_fp8_mlp=self.fp8,
-            moe_grouped_gemm_deep_gemm=self.moe_grouped_gemm_deep_gemm,
         )
         hidden_states = self.token_dispatcher._comm_manager.combine(
             hidden_states,

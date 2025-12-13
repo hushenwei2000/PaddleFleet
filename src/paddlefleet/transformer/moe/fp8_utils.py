@@ -248,7 +248,6 @@ class ExpertsGroupGemmContiguousNode:
         backward_subbatch_rows=None,
         use_bf16_gemm_weight_grad=False,
         use_fp8_mlp=True,
-        moe_grouped_gemm_deep_gemm=True,
     ):
         """
             Initializes the experts group gemm contiguous node.
@@ -261,13 +260,13 @@ class ExpertsGroupGemmContiguousNode:
         """
         if expert_id is None:
             self.experts = custom_map.experts
+            self.grouped_gemm_experts = custom_map.grouped_gemm_experts
         else:
             self.experts = [custom_map.experts[expert_id]]
         self.expert_id = expert_id
         self.recompute_fwd_gate_up = recompute_fwd_gate_up
         self.dequant_input = dequant_input
         self.tokens_per_expert = None
-        self.tokens_per_expert_indices = None
         self.m_indices = None
         self.input = None
         self.input_fp8 = None
@@ -278,7 +277,6 @@ class ExpertsGroupGemmContiguousNode:
         # self.is_split_group_gemm = has_config(self.fp8_fused_ops_configs, "split_group_gemm")
         self.group = group
         self.backward_subbatch_rows = backward_subbatch_rows
-        self.moe_grouped_gemm_deep_gemm = moe_grouped_gemm_deep_gemm
         if self.backward_subbatch_rows is not None:
             assert (
                 self.backward_subbatch_rows > 0
@@ -324,7 +322,6 @@ class ExpertsGroupGemmContiguousNode:
         reset_state
         """
         self.tokens_per_expert = None
-        self.tokens_per_expert_indices = None
         self.m_indices = None
         self.clear_activation_tensors()
 
@@ -360,7 +357,6 @@ class ExpertsGroupGemmContiguousNode:
             assert self.input is not None
             x = self.input
         if numpy.prod(x.shape) != 0:
-            expert_w1 = paddle.stack(expert_w1, axis=0)
             o1 = paddle.zeros(
                 [x.shape[0], expert_w1.shape[2]], dtype="bfloat16"
             )
@@ -372,7 +368,7 @@ class ExpertsGroupGemmContiguousNode:
             )
         else:
             o1 = paddle.empty(
-                [x.shape[0], expert_w1[0].shape[1]], dtype=expert_w1[0].dtype
+                [x.shape[0], expert_w1.shape[2]], dtype=expert_w1[0].dtype
             )
         self.input = x
         return o1
@@ -381,11 +377,10 @@ class ExpertsGroupGemmContiguousNode:
         self, x, expert_w1, num_expert, tokens_per_expert, scale=None
     ):
         self.tokens_per_expert = tokens_per_expert
-        if self.moe_grouped_gemm_deep_gemm:
-            self.tokens_per_expert_indices = paddle.repeat_interleave(
-                paddle.arange(len(self.tokens_per_expert)),
-                paddle.to_tensor(self.tokens_per_expert),
-            ).cast("int32")
+        self.tokens_per_expert_indices = paddle.repeat_interleave(
+            paddle.arange(len(self.tokens_per_expert)),
+            paddle.to_tensor(self.tokens_per_expert),
+        ).cast("int32")
         if not self.use_fp8_mlp:
             return self.fwd_gate_up_bf16(x, expert_w1)
         else:
@@ -495,7 +490,6 @@ class ExpertsGroupGemmContiguousNode:
 
         # down proj
         if numpy.prod(o2.shape) != 0:
-            expert_w2 = paddle.stack(expert_w2, axis=0)
             o3 = paddle.zeros(
                 [o2.shape[0], expert_w2.shape[2]], dtype="bfloat16"
             )
@@ -506,7 +500,7 @@ class ExpertsGroupGemmContiguousNode:
                 self.tokens_per_expert_indices,
             )
         else:
-            o3_shape = [o2.shape[0], expert_w2[0].shape[1]]
+            o3_shape = [o2.shape[0], expert_w2.shape[2]]
             o3 = paddle.empty(o3_shape, dtype=o1.dtype)
         return o3
 
@@ -579,7 +573,6 @@ class ExpertsGroupGemmContiguousNode:
         """
 
         if numpy.prod(unzipped_grad.shape) != 0:
-            expert_w2 = paddle.stack([t.T for t in expert_w2], axis=0)
             do2_s = paddle.zeros(
                 [unzipped_grad.shape[0], expert_w2.shape[2]],
                 dtype=paddle.bfloat16,
@@ -591,7 +584,7 @@ class ExpertsGroupGemmContiguousNode:
                 self.tokens_per_expert_indices,
             )
         else:
-            do2_s_shape = [unzipped_grad.shape[0], expert_w2[0].shape[1]]
+            do2_s_shape = [unzipped_grad.shape[0], expert_w2.shape[1]]
             do2_s = paddle.empty(do2_s_shape, dtype=unzipped_grad.dtype)
 
         # recompute o2
@@ -693,7 +686,6 @@ class ExpertsGroupGemmContiguousNode:
         bwd_gate_up_input_bf16
         """
         if numpy.prod(do1.shape) != 0:
-            expert_w1 = paddle.stack([t.T for t in expert_w1], axis=0)
             dx = paddle.zeros(
                 [do1.shape[0], expert_w1.shape[2]], dtype=paddle.bfloat16
             )
@@ -704,7 +696,7 @@ class ExpertsGroupGemmContiguousNode:
                 self.tokens_per_expert_indices,
             )
         else:
-            dx_shape = [do1.shape[0], expert_w1[0].shape[0]]
+            dx_shape = [do1.shape[0], expert_w1.shape[1]]
             dx = paddle.empty(shape=dx_shape, dtype=do1.dtype)
         return dx
 
@@ -926,10 +918,16 @@ class ExpertsGroupGemmContiguousNode:
             o3 = paddle.zeros(shape, dtype=dtype)
             return o3
         # get w1/w2
-        expert_w1 = [
-            x.up_gate_proj.weight for x in self.experts if x is not None
-        ]
-        expert_w2 = [x.down_proj.weight for x in self.experts if x is not None]
+        if self.use_fp8_mlp:
+            expert_w1 = [
+                x.up_gate_proj.weight for x in self.experts if x is not None
+            ]
+            expert_w2 = [
+                x.down_proj.weight for x in self.experts if x is not None
+            ]
+        else:
+            expert_w1 = self.grouped_gemm_experts.weight1
+            expert_w2 = self.grouped_gemm_experts.weight2
 
         num_expert = len(expert_w1)
 
@@ -970,33 +968,64 @@ class ExpertsGroupGemmContiguousNode:
             dx = paddle.zeros_like(out_grad)
             probs_grad = paddle.zeros_like(unzipped_probs)
 
-            for expert in self.experts:
-                if expert is None:
-                    continue
+            if self.use_fp8_mlp:
+                for expert in self.experts:
+                    if expert is None:
+                        continue
 
-                if hasattr(expert.down_proj.weight, "main_grad"):
-                    if expert.down_proj.weight.main_grad is None:
-                        expert.down_proj.weight.main_grad = paddle.zeros(
-                            shape=expert.down_proj.weight.shape,
-                            dtype=paddle.float32,
+                    if hasattr(expert.down_proj.weight, "main_grad"):
+                        if expert.down_proj.weight.main_grad is None:
+                            expert.down_proj.weight.main_grad = paddle.zeros(
+                                shape=expert.down_proj.weight.shape,
+                                dtype=paddle.float32,
+                            )
+                    else:
+                        if expert.down_proj.weight.grad is None:
+                            expert.down_proj.weight.grad = paddle.zeros(
+                                shape=expert.down_proj.weight.shape,
+                                dtype=paddle.float32,
+                            )
+
+                    if hasattr(expert.up_gate_proj.weight, "main_grad"):
+                        if expert.up_gate_proj.weight.main_grad is None:
+                            expert.up_gate_proj.weight.main_grad = paddle.zeros(
+                                shape=expert.up_gate_proj.weight.shape,
+                                dtype=paddle.float32,
+                            )
+                    else:
+                        if expert.up_gate_proj.weight.grad is None:
+                            expert.up_gate_proj.weight.grad = paddle.zeros(
+                                shape=expert.up_gate_proj.weight.shape,
+                                dtype=paddle.float32,
+                            )
+            else:
+                if hasattr(self.grouped_gemm_experts.weight1, "main_grad"):
+                    if self.grouped_gemm_experts.weight1.main_grad is None:
+                        self.grouped_gemm_experts.weight1.main_grad = (
+                            paddle.zeros(
+                                shape=self.grouped_gemm_experts.weight1.shape,
+                                dtype=paddle.float32,
+                            )
                         )
                 else:
-                    if expert.down_proj.weight.grad is None:
-                        expert.down_proj.weight.grad = paddle.zeros(
-                            shape=expert.down_proj.weight.shape,
+                    if self.grouped_gemm_experts.weight1.grad is None:
+                        self.grouped_gemm_experts.weight1.grad = paddle.zeros(
+                            shape=self.grouped_gemm_experts.weight1.shape,
                             dtype=paddle.float32,
                         )
 
-                if hasattr(expert.up_gate_proj.weight, "main_grad"):
-                    if expert.up_gate_proj.weight.main_grad is None:
-                        expert.up_gate_proj.weight.main_grad = paddle.zeros(
-                            shape=expert.up_gate_proj.weight.shape,
-                            dtype=paddle.float32,
+                if hasattr(self.grouped_gemm_experts.weight2, "main_grad"):
+                    if self.grouped_gemm_experts.weight2.main_grad is None:
+                        self.grouped_gemm_experts.weight2.main_grad = (
+                            paddle.zeros(
+                                shape=self.grouped_gemm_experts.weight2.shape,
+                                dtype=paddle.float32,
+                            )
                         )
                 else:
-                    if expert.up_gate_proj.weight.grad is None:
-                        expert.up_gate_proj.weight.grad = paddle.zeros(
-                            shape=expert.up_gate_proj.weight.shape,
+                    if self.grouped_gemm_experts.weight2.grad is None:
+                        self.grouped_gemm_experts.weight2.grad = paddle.zeros(
+                            shape=self.grouped_gemm_experts.weight2.shape,
                             dtype=paddle.float32,
                         )
 
@@ -1043,11 +1072,10 @@ class ExpertsGroupGemmContiguousNode:
             if o1 is not None:
                 self.o1 = o1._slice(s_idx, e_idx)
             self.tokens_per_expert = [e_idx - s_idx]
-            if self.moe_grouped_gemm_deep_gemm:
-                self.tokens_per_expert_indices = paddle.repeat_interleave(
-                    paddle.arange(len(self.tokens_per_expert)),
-                    paddle.to_tensor(self.tokens_per_expert),
-                ).cast("int32")
+            self.tokens_per_expert_indices = paddle.repeat_interleave(
+                paddle.arange(len(self.tokens_per_expert)),
+                paddle.to_tensor(self.tokens_per_expert),
+            ).cast("int32")
 
             tmp_out_grad = out_grad._slice(s_idx, e_idx)
             tmp_unzipped_probs = unzipped_probs._slice(s_idx, e_idx)
@@ -1069,11 +1097,10 @@ class ExpertsGroupGemmContiguousNode:
             self.o1 = o1
 
         self.tokens_per_expert = tokens_per_expert
-        if self.moe_grouped_gemm_deep_gemm:
-            self.tokens_per_expert_indices = paddle.repeat_interleave(
-                paddle.arange(len(self.tokens_per_expert)),
-                paddle.to_tensor(self.tokens_per_expert),
-            ).cast("int32")
+        self.tokens_per_expert_indices = paddle.repeat_interleave(
+            paddle.arange(len(self.tokens_per_expert)),
+            paddle.to_tensor(self.tokens_per_expert),
+        ).cast("int32")
         probs_grad = paddle.concat(probs_grad, axis=0)
         return out_grad, probs_grad
 
@@ -1085,10 +1112,8 @@ class ExpertsGroupGemmContiguousNode:
             raise NotImplementedError(
                 "bf16 fuse node do not support a2a_async_fn currently"
             )
-        expert_w2 = [x.down_proj.weight for x in self.experts if x is not None]
-        expert_w1 = [
-            x.up_gate_proj.weight for x in self.experts if x is not None
-        ]
+        expert_w2 = self.grouped_gemm_experts.weight2
+        expert_w1 = self.grouped_gemm_experts.weight1
         if self.recompute_fwd_gate_up:
             o1 = self.fwd_gate_up(
                 None, expert_w1, len(expert_w1), self.tokens_per_expert
@@ -1208,36 +1233,32 @@ class ExpertsGroupGemmContiguousNode:
             else:
                 x = self.input
 
-        start_idx = 0
-        for i, n in enumerate(self.tokens_per_expert):
-            if hasattr(weights[i], "main_grad"):
-                if weights[i].main_grad is None:
-                    weights[i].main_grad = paddle.zeros(
-                        weights[i].shape, dtype=paddle.float32
-                    )
-                grad_attr = weights[i].main_grad
-            else:
-                if weights[i].grad is None:
-                    weights[i].grad = paddle.zeros(
-                        weights[i].shape, dtype=paddle.float32
-                    )
-                grad_attr = weights[i].grad
-
-            if n > 0:
-                n = (n + FP8_ALIGN - 1) // FP8_ALIGN * FP8_ALIGN
-                end_idx = start_idx + n
-                paddle._C_ops.fused_linear_param_grad_add(
-                    x._slice(start_idx, end_idx),
-                    dy._slice(start_idx, end_idx),
-                    grad_attr,
-                    None,
-                    True,
-                    False,
+        if hasattr(weights, "main_grad"):
+            if weights.main_grad is None:
+                weights.main_grad = paddle.zeros(
+                    weights.shape, dtype=paddle.float32
                 )
-                start_idx = end_idx
+            deep_gemm_proxy.k_grouped_bf16_gemm_tn_contiguous(
+                a=x.cast(paddle.float32),
+                b=dy.cast(paddle.float32),
+                d=weights.main_grad,
+                ks=self.tokens_per_expert.cpu().list(),
+                ks_tensor=self.tokens_per_expert,
+            )
+        else:
+            if weights.grad is None:
+                weights.grad = paddle.zeros(weights.shape, dtype=paddle.float32)
+            print("exec backward")
+            deep_gemm_proxy.k_grouped_bf16_gemm_tn_contiguous(
+                a=x.cast(paddle.float32),
+                b=dy.cast(paddle.float32),
+                d=weights.grad,
+                ks=self.tokens_per_expert.cpu().list(),
+                ks_tensor=self.tokens_per_expert,
+            )
 
-            if (
-                hasattr(weights[i], "_apply_backward_hook")
-                and not weights[i].stop_gradient
-            ):
-                weights[i]._apply_backward_hook()
+        if (
+            hasattr(weights, "_apply_backward_hook")
+            and not weights.stop_gradient
+        ):
+            weights._apply_backward_hook()
