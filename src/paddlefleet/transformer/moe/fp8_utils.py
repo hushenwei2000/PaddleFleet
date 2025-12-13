@@ -571,7 +571,6 @@ class ExpertsGroupGemmContiguousNode:
         """
         bwd_down_input_bf16
         """
-
         if numpy.prod(unzipped_grad.shape) != 0:
             do2_s = paddle.zeros(
                 [unzipped_grad.shape[0], expert_w2.shape[2]],

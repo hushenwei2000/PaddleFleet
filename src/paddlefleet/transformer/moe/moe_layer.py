@@ -95,7 +95,6 @@ class MoELayer(nn.Layer):
         self.num_local_experts = (
             self.num_experts // self.expert_model_parallel_size
         )
-
         # MoE-Related Configs
         self._init_expert_parallel()
         if config.moe_router_fusion:
@@ -136,7 +135,7 @@ class MoELayer(nn.Layer):
             else:
                 self.experts.append(None)
 
-        if self.expert_model_parallel_size <= 1 and self.moe_use_fusion_node:
+        if self.moe_grouped_gemm:
             self.grouped_gemm_experts = GroupedMLPExpert(
                 self.num_local_experts,
                 routed_expert_config,
@@ -386,9 +385,15 @@ class MoELayer(nn.Layer):
                 reshaped_input = hidden_states.reshape([-1, d_model])
             else:
                 reshaped_input = hidden_states
-            output = self._forward_single_card_moe(
-                reshaped_input, topk_indices, topk_weights
-            )
+            if self.moe_grouped_gemm:
+                print("Using single card moe_grouped_gemm")
+                output = self._forward_single_card_grouped_gemm_moe(
+                    reshaped_input, mask, gates_masked
+                )
+            else:
+                output = self._forward_single_card_moe(
+                    reshaped_input, topk_indices, topk_weights
+                )
 
         if self.training and self.router_aux_loss_coef:
             aux_loss = aux_loss * self.router_aux_loss_coef
@@ -459,7 +464,7 @@ class MoELayer(nn.Layer):
             final_hidden_states = final_hidden_states + final_hidden_states_tmp
         return final_hidden_states.cast(hidden_states.dtype)
 
-    def _forward_traditional_grouped_gemm_moe(
+    def _forward_single_card_grouped_gemm_moe(
         self,
         hidden_states: paddle.Tensor,
         routing_map: paddle.Tensor,
