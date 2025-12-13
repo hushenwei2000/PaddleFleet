@@ -360,9 +360,9 @@ class ExpertsGroupGemmContiguousNode:
             o1 = paddle.zeros(
                 [x.shape[0], expert_w1.shape[2]], dtype="bfloat16"
             )
-            deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
+            deep_gemm_proxy.m_grouped_bf16_gemm_nn_contiguous(
                 x,
-                expert_w1.transpose((0, 2, 1)),
+                expert_w1,
                 o1,
                 self.tokens_per_expert_indices,
             )
@@ -493,9 +493,9 @@ class ExpertsGroupGemmContiguousNode:
             o3 = paddle.zeros(
                 [o2.shape[0], expert_w2.shape[2]], dtype="bfloat16"
             )
-            deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
+            deep_gemm_proxy.m_grouped_bf16_gemm_nn_contiguous(
                 o2,
-                expert_w2.transpose((0, 2, 1)),
+                expert_w2,
                 o3,
                 self.tokens_per_expert_indices,
             )
@@ -573,12 +573,12 @@ class ExpertsGroupGemmContiguousNode:
         """
         if numpy.prod(unzipped_grad.shape) != 0:
             do2_s = paddle.zeros(
-                [unzipped_grad.shape[0], expert_w2.shape[2]],
+                [unzipped_grad.shape[0], expert_w2.shape[1]],
                 dtype=paddle.bfloat16,
             )
             deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
                 unzipped_grad,
-                expert_w2.transpose((0, 2, 1)),
+                expert_w2,
                 do2_s,
                 self.tokens_per_expert_indices,
             )
@@ -686,11 +686,11 @@ class ExpertsGroupGemmContiguousNode:
         """
         if numpy.prod(do1.shape) != 0:
             dx = paddle.zeros(
-                [do1.shape[0], expert_w1.shape[2]], dtype=paddle.bfloat16
+                [do1.shape[0], expert_w1.shape[1]], dtype=paddle.bfloat16
             )
             deep_gemm_proxy.m_grouped_bf16_gemm_nt_contiguous(
                 do1,
-                expert_w1.transpose((0, 2, 1)),
+                expert_w1,
                 dx,
                 self.tokens_per_expert_indices,
             )
@@ -1241,8 +1241,9 @@ class ExpertsGroupGemmContiguousNode:
                 a=x.cast(paddle.float32),
                 b=dy.cast(paddle.float32),
                 d=weights.main_grad,
-                ks=self.tokens_per_expert.cpu().list(),
-                ks_tensor=self.tokens_per_expert,
+                ks=self.tokens_per_expert,
+                ks_tensor=paddle.to_tensor(self.tokens_per_expert),
+                c=paddle.zeros_like(weights.main_grad),
             )
         else:
             if weights.grad is None:
@@ -1252,8 +1253,9 @@ class ExpertsGroupGemmContiguousNode:
                 a=x.cast(paddle.float32),
                 b=dy.cast(paddle.float32),
                 d=weights.grad,
-                ks=self.tokens_per_expert.cpu().list(),
-                ks_tensor=self.tokens_per_expert,
+                ks=self.tokens_per_expert,
+                ks_tensor=paddle.to_tensor(self.tokens_per_expert),
+                c=paddle.zeros_like(weights.grad),
             )
 
         if (
