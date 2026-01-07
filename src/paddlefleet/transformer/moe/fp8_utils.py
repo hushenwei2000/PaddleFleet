@@ -365,19 +365,12 @@ class ExpertsGroupGemmContiguousNode:
                         self.tokens_per_expert,
                     )
             else:
-                expert_output_list = []
-                start_idx = 0
-                for i, token_num in enumerate(self.tokens_per_expert):
-                    if token_num == 0:
-                        continue
-                    end_idx = start_idx + token_num
-                    x_i = x[start_idx:end_idx].contiguous()
-                    expert_w1_i = expert_w1[i]
-                    expert_output_list.append(
-                        F.linear(x=x_i, weight=expert_w1_i)
-                    )
-                    start_idx = end_idx
-                o1 = paddle.concat(expert_output_list, axis=0)
+                expert_w1 = paddle.stack(expert_w1, axis=0)
+                o1 = paddle.incubate.nn.functional.batched_gemm(
+                    x,
+                    expert_w1,
+                    self.tokens_per_expert,
+                )
         else:
             if self.moe_grouped_gemm:
                 o1 = paddle.empty(
@@ -523,19 +516,12 @@ class ExpertsGroupGemmContiguousNode:
                         self.tokens_per_expert,
                     )
             else:
-                expert_output_list = []
-                start_idx = 0
-                for i, token_num in enumerate(self.tokens_per_expert):
-                    if token_num == 0:
-                        continue
-                    end_idx = start_idx + token_num
-                    o1_i = o2[start_idx:end_idx].contiguous()
-                    expert_w2_i = expert_w2[i]
-                    expert_output_list.append(
-                        F.linear(x=o1_i, weight=expert_w2_i)
-                    )
-                    start_idx = end_idx
-                o3 = paddle.concat(expert_output_list, axis=0)
+                expert_w2 = paddle.stack(expert_w2, axis=0)
+                o3 = paddle.incubate.nn.functional.batched_gemm(
+                    o2,
+                    expert_w2,
+                    self.tokens_per_expert,
+                )
         else:
             if self.moe_grouped_gemm:
                 o3_shape = [o2.shape[0], expert_w2.shape[2]]
@@ -625,28 +611,24 @@ class ExpertsGroupGemmContiguousNode:
                         self.tokens_per_expert_indices,
                     )
                 else:
+                    print("expert_w2:", expert_w2)
                     do2_s = paddle.incubate.nn.functional.batched_gemm(
                         unzipped_grad,
                         expert_w2,
                         self.tokens_per_expert,
                         trans_rhs=True,
                     )
+                    print("do2_s:", do2_s)
             else:
-                do2_s_list = []
-                start_idx = 0
-                for i, token_num in enumerate(self.tokens_per_expert):
-                    if token_num == 0:
-                        continue
-                    end_idx = start_idx + token_num
-                    unzipped_grad_i = unzipped_grad[
-                        start_idx:end_idx
-                    ].contiguous()
-                    expert_w2_i = expert_w2[i].T.contiguous()
-                    do2_s_list.append(
-                        F.linear(x=unzipped_grad_i, weight=expert_w2_i)
-                    )
-                    start_idx = end_idx
-                do2_s = paddle.concat(do2_s_list, axis=0)
+                expert_w2 = paddle.stack(expert_w2, axis=0)
+                print("expert_w2:", expert_w2)
+                do2_s = paddle.incubate.nn.functional.batched_gemm(
+                    unzipped_grad,
+                    expert_w2,
+                    self.tokens_per_expert,
+                    trans_rhs=True,
+                )
+                print("do2_s:", do2_s)
         else:
             if self.moe_grouped_gemm:
                 do2_s_shape = [unzipped_grad.shape[0], expert_w2.shape[1]]
@@ -760,18 +742,17 @@ class ExpertsGroupGemmContiguousNode:
                         self.tokens_per_expert,
                         trans_rhs=True,
                     )
+                    print("dx:", dx)
             else:
-                dx_list = []
-                start_idx = 0
-                for i, token_num in enumerate(self.tokens_per_expert):
-                    if token_num == 0:
-                        continue
-                    end_idx = start_idx + token_num
-                    do1_i = do1[start_idx:end_idx].contiguous()
-                    expert_w1_i = expert_w1[i].T.contiguous()
-                    dx_list.append(F.linear(x=do1_i, weight=expert_w1_i))
-                    start_idx = end_idx
-                dx = paddle.concat(dx_list, axis=0)
+                expert_w1 = paddle.stack(expert_w1, axis=0)
+                dx = paddle.incubate.nn.functional.batched_gemm(
+                    do1,
+                    expert_w1,
+                    self.tokens_per_expert,
+                    trans_rhs=True,
+                )
+                print("dx:", dx)
+
         else:
             if self.moe_grouped_gemm:
                 dx_shape = [do1.shape[0], expert_w1.shape[1]]
@@ -1347,9 +1328,12 @@ class ExpertsGroupGemmContiguousNode:
                         self.tokens_per_expert,
                         trans_lhs=True,
                     )
+                    print("weights.main_gradorigin", weights.main_grad)
+                    print("weights_res", weights_res)
                     weights.main_grad.add_(
                         weights_res.cast(weights.main_grad.dtype)
                     )
+                    print("weights.main_grad", weights.main_grad)
             else:
                 if weights.grad is None:
                     weights.grad = paddle.zeros(
@@ -1380,33 +1364,51 @@ class ExpertsGroupGemmContiguousNode:
             ):
                 weights._apply_backward_hook()
         else:
-            start_idx = 0
+            grad_attr_list = []
             for i, n in enumerate(self.tokens_per_expert):
                 if hasattr(weights[i], "main_grad"):
                     if weights[i].main_grad is None:
                         weights[i].main_grad = paddle.zeros(
                             weights[i].shape, dtype=paddle.float32
                         )
-                    grad_attr = weights[i].main_grad
+                    grad_attr_list.append(weights[i].main_grad)
                 else:
                     if weights[i].grad is None:
                         weights[i].grad = paddle.zeros(
                             weights[i].shape, dtype=paddle.float32
                         )
-                    grad_attr = weights[i].grad
+                    grad_attr_list.append(weights[i].grad)
 
-                if n > 0:
-                    n = (n + FP8_ALIGN - 1) // FP8_ALIGN * FP8_ALIGN
-                    end_idx = start_idx + n
-                    paddle._C_ops.fused_linear_param_grad_add(
-                        x._slice(start_idx, end_idx),
-                        dy._slice(start_idx, end_idx),
-                        grad_attr,
-                        None,
-                        True,
-                        False,
+            grad_attr_fused = paddle.stack(grad_attr_list, axis=0).cast(
+                paddle.float32
+            )
+            print("weights.main_gradorigin", grad_attr_fused)
+
+            weights_res = paddle.incubate.nn.functional.batched_gemm(
+                x,
+                dy,
+                self.tokens_per_expert,
+                trans_lhs=True,
+            )
+            print("weights_res", weights_res)
+
+            # Compute updated gradients
+            grad_attr_fused = grad_attr_fused + weights_res.cast(
+                grad_attr_fused.dtype
+            )
+            grad_attr_list_updated = paddle.unbind(grad_attr_fused, axis=0)
+            print("weights.main_grad", grad_attr_fused)
+
+            # Explicitly assign back
+            for i, n in enumerate(self.tokens_per_expert):
+                if hasattr(weights[i], "main_grad"):
+                    weights[i].main_grad = grad_attr_list_updated[i].cast(
+                        weights[i].main_grad.dtype
                     )
-                    start_idx = end_idx
+                else:
+                    weights[i].grad = grad_attr_list_updated[i].cast(
+                        weights[i].grad.dtype
+                    )
 
                 if (
                     hasattr(weights[i], "_apply_backward_hook")
